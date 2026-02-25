@@ -29,6 +29,10 @@ SYSLOG_IDENTIFIER = "xcvrd"
 GLOBAL_MEDIA_SETTINGS_KEY = 'GLOBAL_MEDIA_SETTINGS'
 PORT_MEDIA_SETTINGS_KEY = 'PORT_MEDIA_SETTINGS'
 CUSTOM_MEDIA_SETTINGS_KEY = 'CUSTOM_MEDIA_SETTINGS'
+GEARBOX_GLOBAL_MEDIA_SETTINGS_KEY = 'GEARBOX_GLOBAL_MEDIA_SETTINGS'
+GEARBOX_PORT_MEDIA_SETTINGS_KEY = 'GEARBOX_PORT_MEDIA_SETTINGS'
+GEARBOX_LINE_SIDE_KEY = 'line'
+GEARBOX_SYSTEM_SIDE_KEY = 'system'
 PHYSICAL_PORT_NOT_EXIST = -1
 
 helper_logger = syslogger.SysLogger(SYSLOG_IDENTIFIER, enable_runtime_config=True)
@@ -146,7 +150,18 @@ class GlobalMediaSettingsParser(MediaSettingsParserBase):
         return ParseResult(exact_match={}, default_match={})
 
 class GearboxGlobalMediaSettingsParser(GlobalMediaSettingsParser):
-    ...
+    def __init__(self, settings, gearbox_side):
+        super().__init__(settings)
+        self.gearbox_side = gearbox_side
+
+    def key(self):
+        return GEARBOX_PORT_MEDIA_SETTINGS_KEY
+
+    def get_media_dict_for_port(self, physical_port):
+        media_dict = super().get_media_dict_for_port(physical_port)
+        if media_dict:
+            return media_dict.get(self.gearbox_side, {})
+        return media_dict
 
 class PortMediaSettingsParser(MediaSettingsParserBase):
     def key(self):
@@ -177,7 +192,18 @@ class PortMediaSettingsParser(MediaSettingsParserBase):
         return ParseResult(exact_match={}, default_match={})
 
 class GearboxPortMediaSettingsParser(PortMediaSettingsParser):
-    ...
+    def __init__(self, settings, gearbox_side):
+        super().__init__(settings)
+        self.gearbox_side = gearbox_side
+
+    def key(self):
+        return GEARBOX_PORT_MEDIA_SETTINGS_KEY
+
+    def get_media_dict_for_port(self, physical_port):
+        media_dict = super().get_media_dict_for_port(physical_port)
+        if media_dict:
+            return media_dict.get(self.gearbox_side, {})
+        return media_dict
 
 class CustomMediaSettingsParser(MediaSettingsParserBase):
     ...
@@ -333,15 +359,20 @@ def get_serdes_si_setting_val_str(val_dict, lane_count, subport_num=0):
     return ','.join(val_list[start_lane_idx:start_lane_idx + lane_count])
 
 
-def get_media_settings_value(physical_port, key):
+def get_media_settings_value(physical_port, key, gearbox_side=None):
     # Run through each parser to find media settings for the given port, return the first match found.
     # Note that the order of this list matters -- in theory, media_settings.json could contain
     # both global and port-specific settings for a given port.
     PARSERS = [PortMediaSettingsParser, GlobalMediaSettingsParser]
+    if gearbox_side:
+        PARSERS = [GearboxPortMediaSettingsParser, GearboxGlobalMediaSettingsParser]
 
     default_match = {}
     for parser in PARSERS:
-        parse_result = parser(g_dict).parse(physical_port, key)
+        if gearbox_side:
+            parse_result = parser(g_dict, gearbox_side).parse(physical_port, key)
+        else:
+            parse_result = parser(g_dict).parse(physical_port, key)
 
         if parse_result.exact_match:
             return parse_result.exact_match
