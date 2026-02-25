@@ -309,14 +309,26 @@ def get_media_settings_for_speed(settings_dict, lane_speed_key):
 
 
 def get_media_settings_value(physical_port, key):
+    default_dict = {}
+
+    # Check global media settings first (can apply to ranges/lists of ports)
+    if GLOBAL_MEDIA_SETTINGS_KEY in g_dict:
+        result = GlobalMediaSettingsParser().parse(g_dict[GLOBAL_MEDIA_SETTINGS_KEY], physical_port, key)
+        if result:
+            return result
+
+    # Then check port-specific media settings
+    if PORT_MEDIA_SETTINGS_KEY in g_dict:
+        result = PortMediaSettingsParser().parse(g_dict[PORT_MEDIA_SETTINGS_KEY], physical_port, key)
+        if result:
+            return result
+
     if CUSTOM_MEDIA_SETTINGS_KEY in g_dict:
-        return CustomMediaSettingsParser().parse(g_dict[CUSTOM_MEDIA_SETTINGS_KEY], physical_port, key)
-    elif PORT_MEDIA_SETTINGS_KEY in g_dict:
-        return PortMediaSettingsParser().parse(g_dict[PORT_MEDIA_SETTINGS_KEY], physical_port, key)
-    elif GLOBAL_MEDIA_SETTINGS_KEY in g_dict:
-        return GlobalMediaSettingsParser().parse(g_dict[GLOBAL_MEDIA_SETTINGS_KEY], physical_port, key)
-    else:
-        return {}
+        result = CustomMediaSettingsParser().parse(g_dict[CUSTOM_MEDIA_SETTINGS_KEY], physical_port, key)
+        if result:
+            return result
+
+    return {}
 
 
 def get_speed_lane_count_and_subport(port, cfg_port_tbl):
