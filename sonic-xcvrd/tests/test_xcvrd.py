@@ -1683,11 +1683,11 @@ class TestXcvrdScript(object):
             result = media_settings_parser.get_media_settings_value(port, key)
             assert result == expected
 
-    @patch('xcvrd.xcvrd.platform_chassis')
-    def test_get_is_copper_exception(self, mock_chassis):
+    @patch('xcvrd.xcvrd_utilities.common.platform_chassis')
+    def test_is_copper_exception(self, mock_chassis):
         mock_sfp = MagicMock()
         mock_chassis.get_sfp = MagicMock(return_value=mock_sfp, side_effect=AttributeError)
-        result = media_settings_parser.get_is_copper(0)
+        result = common.is_copper(0)
         assert result == True
 
     @patch('xcvrd.xcvrd_utilities.common._wrapper_get_presence', MagicMock(return_value=True))

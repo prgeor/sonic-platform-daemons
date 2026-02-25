@@ -13,9 +13,9 @@ from swsscommon import swsscommon
 from xcvrd import xcvrd
 from .xcvr_table_helper import *
 from . import common
+from abc import ABC, abstractmethod
 
-g_dict = {}
-
+# Constants
 LANE_SPEED_KEY_PREFIX = "speed:"
 VENDOR_KEY = 'vendor_key'
 MEDIA_KEY = 'media_key'
@@ -25,9 +25,103 @@ DEFAULT_KEY = 'Default'
 # This is useful if default value is desired when no match is found for lane speed key
 LANE_SPEED_DEFAULT_KEY = LANE_SPEED_KEY_PREFIX + DEFAULT_KEY
 SYSLOG_IDENTIFIER = "xcvrd"
+GLOBAL_MEDIA_SETTINGS_KEY = 'GLOBAL_MEDIA_SETTINGS'
+PORT_MEDIA_SETTINGS_KEY = 'PORT_MEDIA_SETTINGS'
+CUSTOM_MEDIA_SETTINGS_KEY = 'CUSTOM_MEDIA_SETTINGS'
+PHYSICAL_PORT_NOT_EXIST = -1
+
 helper_logger = syslogger.SysLogger(SYSLOG_IDENTIFIER, enable_runtime_config=True)
 
-PHYSICAL_PORT_NOT_EXIST = -1
+g_dict = {}
+
+# Parser base and implementations for modular media settings handling
+class MediaSettingsParserBase(ABC):
+    @abstractmethod
+    def parse(self, settings, physical_port, key):
+        """Parse the settings and return the relevant values."""
+        pass
+
+class GlobalMediaSettingsParser(MediaSettingsParserBase):
+    def parse(self, settings, physical_port, key):
+        RANGE_SEPARATOR = '-'
+        COMMA_SEPARATOR = ','
+        media_dict = {}
+        default_dict = {}
+        lane_speed_key = key[LANE_SPEED_KEY]
+
+        def get_media_settings(key, media_dict):
+            for dict_key in media_dict.keys():
+                if (re.match(dict_key, key[VENDOR_KEY]) or \
+                    re.match(dict_key, key[VENDOR_KEY].split('-')[0]) or \
+                    re.match(dict_key, key[MEDIA_KEY])):
+                    return get_media_settings_for_speed(media_dict[dict_key], key[LANE_SPEED_KEY])
+            for dict_key in media_dict.keys():
+                if re.match(dict_key, key[MEDIUM_LANE_SPEED_KEY]):
+                    return get_media_settings_for_speed(media_dict[dict_key], key[LANE_SPEED_KEY])
+            return None
+
+        for keys in settings:
+            if COMMA_SEPARATOR in keys:
+                port_list = keys.split(COMMA_SEPARATOR)
+                for port in port_list:
+                    if RANGE_SEPARATOR in port:
+                        if common.check_port_in_range(port, physical_port):
+                            media_dict = settings[keys]
+                            break
+                    elif str(physical_port) == port:
+                        media_dict = settings[keys]
+                        break
+            elif RANGE_SEPARATOR in keys:
+                if common.check_port_in_range(keys, physical_port):
+                    media_dict = settings[keys]
+
+            media_settings = get_media_settings(key, media_dict)
+            if media_settings is not None:
+                return media_settings
+            elif DEFAULT_KEY in media_dict:
+                default_dict = get_media_settings_for_speed(media_dict[DEFAULT_KEY], lane_speed_key)
+
+        if len(default_dict) != 0:
+            return default_dict
+        return {}
+
+class PortMediaSettingsParser(MediaSettingsParserBase):
+    def parse(self, settings, physical_port, key):
+        media_dict = {}
+        default_dict = {}
+        lane_speed_key = key[LANE_SPEED_KEY]
+
+        def get_media_settings(key, media_dict):
+            for dict_key in media_dict.keys():
+                if (re.match(dict_key, key[VENDOR_KEY]) or \
+                    re.match(dict_key, key[VENDOR_KEY].split('-')[0]) or \
+                    re.match(dict_key, key[MEDIA_KEY])):
+                    return get_media_settings_for_speed(media_dict[dict_key], key[LANE_SPEED_KEY])
+            for dict_key in media_dict.keys():
+                if re.match(dict_key, key[MEDIUM_LANE_SPEED_KEY]):
+                    return get_media_settings_for_speed(media_dict[dict_key], key[LANE_SPEED_KEY])
+            return None
+
+        for keys in settings:
+            if int(keys) == physical_port:
+                media_dict = settings[keys]
+                break
+
+        if len(media_dict) == 0:
+            return {}
+
+        media_settings = get_media_settings(key, media_dict)
+        if media_settings is not None:
+            return media_settings
+        elif DEFAULT_KEY in media_dict:
+            return get_media_settings_for_speed(media_dict[DEFAULT_KEY], lane_speed_key)
+        return {}
+
+class CustomMediaSettingsParser(MediaSettingsParserBase):
+    def parse(self, settings, physical_port, key):
+        # TODO: Placeholder for custom media setting parser
+        return {}
+
 
 def load_media_settings():
     global g_dict
@@ -54,13 +148,6 @@ def media_settings_present():
         return True
     return False
 
-def get_is_copper(physical_port):
-    if xcvrd.platform_chassis:
-        try:
-            return xcvrd.platform_chassis.get_sfp(physical_port).get_xcvr_api().is_copper()
-        except (NotImplementedError, AttributeError):
-            helper_logger.log_debug(f"No is_copper() defined for xcvr api on physical port {physical_port}, assuming Copper")
-    return True
 
 def get_lane_speed_key(physical_port, port_speed, lane_count):
     """
@@ -148,7 +235,7 @@ def get_media_settings_key(physical_port, transceiver_dict, port_speed, lane_cou
         media_key += '-' + '*'
 
     lane_speed_key = get_lane_speed_key(physical_port, port_speed, lane_count)
-    medium = "COPPER" if get_is_copper(physical_port) else "OPTICAL"
+    medium = "COPPER" if common.is_copper(physical_port) else "OPTICAL"
     speed = int(int(int(port_speed) /lane_count)/1000)
     medium_lane_speed_key = medium + str(speed)
     # return (vendor_key, media_key, lane_speed_key)
@@ -222,90 +309,14 @@ def get_media_settings_for_speed(settings_dict, lane_speed_key):
 
 
 def get_media_settings_value(physical_port, key):
-    GLOBAL_MEDIA_SETTINGS_KEY = 'GLOBAL_MEDIA_SETTINGS'
-    PORT_MEDIA_SETTINGS_KEY = 'PORT_MEDIA_SETTINGS'
-    RANGE_SEPARATOR = '-'
-    COMMA_SEPARATOR = ','
-    media_dict = {}
-    default_dict = {}
-    lane_speed_key = key[LANE_SPEED_KEY]
-
-    def get_media_settings(key, media_dict):
-        # Check vendor and media keys first (equal priority, higher than medium lane speed)
-        # This includes both full vendor key (VENDOR-MODEL), vendor name only, and media key
-        for dict_key in media_dict.keys():
-            if (re.match(dict_key, key[VENDOR_KEY]) or \
-                re.match(dict_key, key[VENDOR_KEY].split('-')[0]) or \
-                re.match(dict_key, key[MEDIA_KEY])): # e.g: 'AMPHENOL-1234' or 'QSFP28-40GBASE-CR4-1M'
-                return get_media_settings_for_speed(media_dict[dict_key], key[LANE_SPEED_KEY])
-
-        # Check medium lane speed keys last (lowest priority)
-        for dict_key in media_dict.keys():
-            if re.match(dict_key, key[MEDIUM_LANE_SPEED_KEY]): # e.g: 'COPPER50'
-                return get_media_settings_for_speed(media_dict[dict_key], key[LANE_SPEED_KEY])
-
-        return None
-
-    # Keys under global media settings can be a list or range or list of ranges
-    # of physical port numbers. Below are some examples
-    # 1-32
-    # 1,2,3,4,5
-    # 1-4,9-12
-
-    if GLOBAL_MEDIA_SETTINGS_KEY in g_dict:
-        for keys in g_dict[GLOBAL_MEDIA_SETTINGS_KEY]:
-            if COMMA_SEPARATOR in keys:
-                port_list = keys.split(COMMA_SEPARATOR)
-                for port in port_list:
-                    if RANGE_SEPARATOR in port:
-                        if common.check_port_in_range(port, physical_port):
-                            media_dict = g_dict[GLOBAL_MEDIA_SETTINGS_KEY][keys]
-                            break
-                    elif str(physical_port) == port:
-                        media_dict = g_dict[GLOBAL_MEDIA_SETTINGS_KEY][keys]
-                        break
-
-            elif RANGE_SEPARATOR in keys:
-                if common.check_port_in_range(keys, physical_port):
-                    media_dict = g_dict[GLOBAL_MEDIA_SETTINGS_KEY][keys]
-
-            # If there is a match in the global profile for a media type,
-            # fetch those values
-            media_settings = get_media_settings(key, media_dict)
-            if media_settings is not None:
-                return media_settings
-            # Try to match 'default' key if it does not match any keys
-            elif DEFAULT_KEY in media_dict:
-                default_dict = get_media_settings_for_speed(media_dict[DEFAULT_KEY], lane_speed_key)
-
-    media_dict = {}
-
-    if PORT_MEDIA_SETTINGS_KEY in g_dict:
-        for keys in g_dict[PORT_MEDIA_SETTINGS_KEY]:
-            if int(keys) == physical_port:
-                media_dict = g_dict[PORT_MEDIA_SETTINGS_KEY][keys]
-                break
-
-        if len(media_dict) == 0:
-            if len(default_dict) != 0:
-                return default_dict
-            else:
-                helper_logger.log_notice("No values for physical port '{}'".format(physical_port))
-            return {}
-
-        media_settings = get_media_settings(key, media_dict)
-        if media_settings is not None:
-            return media_settings
-        # Try to match 'default' key if it does not match any keys
-        elif DEFAULT_KEY in media_dict:
-            return get_media_settings_for_speed(media_dict[DEFAULT_KEY], lane_speed_key)
-        elif len(default_dict) != 0:
-            return default_dict
+    if CUSTOM_MEDIA_SETTINGS_KEY in g_dict:
+        return CustomMediaSettingsParser().parse(g_dict[CUSTOM_MEDIA_SETTINGS_KEY], physical_port, key)
+    elif PORT_MEDIA_SETTINGS_KEY in g_dict:
+        return PortMediaSettingsParser().parse(g_dict[PORT_MEDIA_SETTINGS_KEY], physical_port, key)
+    elif GLOBAL_MEDIA_SETTINGS_KEY in g_dict:
+        return GlobalMediaSettingsParser().parse(g_dict[GLOBAL_MEDIA_SETTINGS_KEY], physical_port, key)
     else:
-        if len(default_dict) != 0:
-            return default_dict
-
-    return {}
+        return {}
 
 
 def get_speed_lane_count_and_subport(port, cfg_port_tbl):
