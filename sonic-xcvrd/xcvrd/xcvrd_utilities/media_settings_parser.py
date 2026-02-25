@@ -2,6 +2,7 @@
 This parser is responsible for parsing the ASIC side SerDes custom SI settings.
 """
 
+import dataclasses
 import json
 import os
 import ast
@@ -34,93 +35,152 @@ helper_logger = syslogger.SysLogger(SYSLOG_IDENTIFIER, enable_runtime_config=Tru
 
 g_dict = {}
 
+@dataclasses.dataclass
+class ParseResult:
+    exact_match: dict
+    default_match: dict
+
 # Parser base and implementations for modular media settings handling
 class MediaSettingsParserBase(ABC):
+
     @abstractmethod
-    def parse(self, settings, physical_port, key):
+    def key(self):
+        ...
+
+    def __init__(self, settings):
+        self.settings = settings[self.key()] if self.key() in settings else {}
+
+    def is_si_per_speed_supported(self, media_dict):
+        return LANE_SPEED_KEY_PREFIX in list(media_dict.keys())[0]
+
+    def get_media_settings_for_speed(self, settings_dict, lane_speed_key):
+        """
+        Get settings for the given lane speed key
+
+        Args:
+            settings_dict: dictionary used to look up the settings for the given lane speed key,
+                        its key can also be regular expression pattern string.
+                            e.g. {'speed:400GAUI-8': {'idriver': {'lane0': '0x1f', ...}}, ...}
+                                or {'idriver': {'lane0': '0x1f', ...}, ...}
+                                or {'speed:200GAUI-8|100GAUI-4|25G': {'idriver': {'lane0': '0x1f', ...}}, ...}
+            lane_speed_key: the lane speed key either in host electrical interface format (e.g: 'speed:200GAUI-8')
+                            or regular format (e.g: 'speed:25G')
+
+        Returns:
+            dictionary containing the settings for the given lane speed key if matched, return {} if no match
+            If no lane speed key defined in input dictionary, return the input dictionary as is
+        """
+        if not self.is_si_per_speed_supported(settings_dict):
+            return settings_dict
+        if not lane_speed_key:
+            return {}
+        # Check if lane_speed_key matches any key defined in the input dictionary
+        lane_speed_str = lane_speed_key[len(LANE_SPEED_KEY_PREFIX):]
+        for candidate_lane_speed_key, value_dict in settings_dict.items():
+            lane_speed_pattern = candidate_lane_speed_key[len(LANE_SPEED_KEY_PREFIX):]
+            if re.fullmatch(lane_speed_pattern, lane_speed_str):
+                return value_dict
+        # If no match found, return default settings if present (defined as LANE_SPEED_DEFAULT_KEY)
+        return settings_dict.get(LANE_SPEED_DEFAULT_KEY, {})
+
+    def get_media_settings(self, key, media_dict):
+        for dict_key in media_dict.keys():
+            if (re.match(dict_key, key[VENDOR_KEY]) or \
+                re.match(dict_key, key[VENDOR_KEY].split('-')[0]) or \
+                re.match(dict_key, key[MEDIA_KEY])):
+                return self.get_media_settings_for_speed(media_dict[dict_key], key[LANE_SPEED_KEY])
+        for dict_key in media_dict.keys():
+            if re.match(dict_key, key[MEDIUM_LANE_SPEED_KEY]):
+                return self.get_media_settings_for_speed(media_dict[dict_key], key[LANE_SPEED_KEY])
+        return None
+
+    @abstractmethod
+    def get_media_dict_for_port(self, physical_port):
+        ...
+
+    @abstractmethod
+    def parse(self, physical_port, key):
         """Parse the settings and return the relevant values."""
         pass
 
 class GlobalMediaSettingsParser(MediaSettingsParserBase):
-    def parse(self, settings, physical_port, key):
+    def key(self):
+        return GLOBAL_MEDIA_SETTINGS_KEY
+
+    def get_media_dict_for_port(self, physical_port):
         RANGE_SEPARATOR = '-'
         COMMA_SEPARATOR = ','
-        media_dict = {}
-        default_dict = {}
-        lane_speed_key = key[LANE_SPEED_KEY]
-
-        def get_media_settings(key, media_dict):
-            for dict_key in media_dict.keys():
-                if (re.match(dict_key, key[VENDOR_KEY]) or \
-                    re.match(dict_key, key[VENDOR_KEY].split('-')[0]) or \
-                    re.match(dict_key, key[MEDIA_KEY])):
-                    return get_media_settings_for_speed(media_dict[dict_key], key[LANE_SPEED_KEY])
-            for dict_key in media_dict.keys():
-                if re.match(dict_key, key[MEDIUM_LANE_SPEED_KEY]):
-                    return get_media_settings_for_speed(media_dict[dict_key], key[LANE_SPEED_KEY])
-            return None
-
-        for keys in settings:
-            if COMMA_SEPARATOR in keys:
-                port_list = keys.split(COMMA_SEPARATOR)
+        for port_selector in self.settings:
+            if COMMA_SEPARATOR in port_selector:
+                port_list = port_selector.split(COMMA_SEPARATOR)
                 for port in port_list:
                     if RANGE_SEPARATOR in port:
                         if common.check_port_in_range(port, physical_port):
-                            media_dict = settings[keys]
-                            break
+                            return self.settings[port_selector]
                     elif str(physical_port) == port:
-                        media_dict = settings[keys]
-                        break
-            elif RANGE_SEPARATOR in keys:
-                if common.check_port_in_range(keys, physical_port):
-                    media_dict = settings[keys]
+                        return self.settings[port_selector]
+            elif RANGE_SEPARATOR in port_selector:
+                if common.check_port_in_range(port_selector, physical_port):
+                    return self.settings[port_selector]
 
-            media_settings = get_media_settings(key, media_dict)
-            if media_settings is not None:
-                return media_settings
-            elif DEFAULT_KEY in media_dict:
-                default_dict = get_media_settings_for_speed(media_dict[DEFAULT_KEY], lane_speed_key)
+    def parse(self, physical_port, key):
+        if not self.settings:
+            return ParseResult(exact_match={}, default_match={})
 
-        if len(default_dict) != 0:
-            return default_dict
-        return {}
-
-class PortMediaSettingsParser(MediaSettingsParserBase):
-    def parse(self, settings, physical_port, key):
-        media_dict = {}
         default_dict = {}
         lane_speed_key = key[LANE_SPEED_KEY]
 
-        def get_media_settings(key, media_dict):
-            for dict_key in media_dict.keys():
-                if (re.match(dict_key, key[VENDOR_KEY]) or \
-                    re.match(dict_key, key[VENDOR_KEY].split('-')[0]) or \
-                    re.match(dict_key, key[MEDIA_KEY])):
-                    return get_media_settings_for_speed(media_dict[dict_key], key[LANE_SPEED_KEY])
-            for dict_key in media_dict.keys():
-                if re.match(dict_key, key[MEDIUM_LANE_SPEED_KEY]):
-                    return get_media_settings_for_speed(media_dict[dict_key], key[LANE_SPEED_KEY])
-            return None
-
-        for keys in settings:
-            if int(keys) == physical_port:
-                media_dict = settings[keys]
-                break
-
-        if len(media_dict) == 0:
-            return {}
-
-        media_settings = get_media_settings(key, media_dict)
+        media_dict = self.get_media_dict_for_port(physical_port)
+        if not media_dict:
+            helper_logger.log_info("No global media settings found for physical port {}".format(physical_port))
+            return ParseResult(exact_match={}, default_match={})
+        
+        media_settings = self.get_media_settings(key, media_dict)
         if media_settings is not None:
-            return media_settings
+            return ParseResult(exact_match=media_settings, default_match={})
         elif DEFAULT_KEY in media_dict:
-            return get_media_settings_for_speed(media_dict[DEFAULT_KEY], lane_speed_key)
-        return {}
+            default_dict = self.get_media_settings_for_speed(media_dict[DEFAULT_KEY], lane_speed_key)
+
+        if len(default_dict) != 0:
+            return ParseResult(exact_match={}, default_match=default_dict)
+        return ParseResult(exact_match={}, default_match={})
+
+class GearboxGlobalMediaSettingsParser(GlobalMediaSettingsParser):
+    ...
+
+class PortMediaSettingsParser(MediaSettingsParserBase):
+    def key(self):
+        return PORT_MEDIA_SETTINGS_KEY
+
+    def get_media_dict_for_port(self, physical_port):
+        for port_selector in self.settings:
+            if int(port_selector) == physical_port:
+                return self.settings[port_selector]
+
+    def parse(self, physical_port, key):
+        if not self.settings:
+            return ParseResult(exact_match={}, default_match={})
+
+        media_dict = {}
+        lane_speed_key = key[LANE_SPEED_KEY]
+
+        media_dict = self.get_media_dict_for_port(physical_port)
+        if not media_dict:
+            helper_logger.log_info("No port-specific media settings found for physical port {}".format(physical_port))
+            return ParseResult(exact_match={}, default_match={})
+
+        media_settings = self.get_media_settings(key, media_dict)
+        if media_settings is not None:
+            return ParseResult(exact_match=media_settings, default_match={})
+        elif DEFAULT_KEY in media_dict:
+            return ParseResult(exact_match={}, default_match=self.get_media_settings_for_speed(media_dict[DEFAULT_KEY], lane_speed_key))
+        return ParseResult(exact_match={}, default_match={})
+
+class GearboxPortMediaSettingsParser(PortMediaSettingsParser):
+    ...
 
 class CustomMediaSettingsParser(MediaSettingsParserBase):
-    def parse(self, settings, physical_port, key):
-        # TODO: Placeholder for custom media setting parser
-        return {}
+    ...
 
 
 def load_media_settings():
@@ -247,10 +307,6 @@ def get_media_settings_key(physical_port, transceiver_dict, port_speed, lane_cou
     }
 
 
-def is_si_per_speed_supported(media_dict):
-    return LANE_SPEED_KEY_PREFIX in list(media_dict.keys())[0]
-
-
 def get_serdes_si_setting_val_str(val_dict, lane_count, subport_num=0):
     """
     Get ASIC side SerDes SI settings for the given logical port (subport)
@@ -277,58 +333,22 @@ def get_serdes_si_setting_val_str(val_dict, lane_count, subport_num=0):
     return ','.join(val_list[start_lane_idx:start_lane_idx + lane_count])
 
 
-def get_media_settings_for_speed(settings_dict, lane_speed_key):
-    """
-    Get settings for the given lane speed key
-
-    Args:
-        settings_dict: dictionary used to look up the settings for the given lane speed key,
-                       its key can also be regular expression pattern string.
-                        e.g. {'speed:400GAUI-8': {'idriver': {'lane0': '0x1f', ...}}, ...}
-                            or {'idriver': {'lane0': '0x1f', ...}, ...}
-                            or {'speed:200GAUI-8|100GAUI-4|25G': {'idriver': {'lane0': '0x1f', ...}}, ...}
-        lane_speed_key: the lane speed key either in host electrical interface format (e.g: 'speed:200GAUI-8')
-                        or regular format (e.g: 'speed:25G')
-
-    Returns:
-        dictionary containing the settings for the given lane speed key if matched, return {} if no match
-        If no lane speed key defined in input dictionary, return the input dictionary as is
-    """
-    if not is_si_per_speed_supported(settings_dict):
-        return settings_dict
-    if not lane_speed_key:
-        return {}
-    # Check if lane_speed_key matches any key defined in the input dictionary
-    lane_speed_str = lane_speed_key[len(LANE_SPEED_KEY_PREFIX):]
-    for candidate_lane_speed_key, value_dict in settings_dict.items():
-        lane_speed_pattern = candidate_lane_speed_key[len(LANE_SPEED_KEY_PREFIX):]
-        if re.fullmatch(lane_speed_pattern, lane_speed_str):
-            return value_dict
-    # If no match found, return default settings if present (defined as LANE_SPEED_DEFAULT_KEY)
-    return settings_dict.get(LANE_SPEED_DEFAULT_KEY, {})
-
-
 def get_media_settings_value(physical_port, key):
-    default_dict = {}
+    # Run through each parser to find media settings for the given port, return the first match found.
+    # Note that the order of this list matters -- in theory, media_settings.json could contain
+    # both global and port-specific settings for a given port.
+    PARSERS = [PortMediaSettingsParser, GlobalMediaSettingsParser]
 
-    # Check global media settings first (can apply to ranges/lists of ports)
-    if GLOBAL_MEDIA_SETTINGS_KEY in g_dict:
-        result = GlobalMediaSettingsParser().parse(g_dict[GLOBAL_MEDIA_SETTINGS_KEY], physical_port, key)
-        if result:
-            return result
+    default_match = {}
+    for parser in PARSERS:
+        parse_result = parser(g_dict).parse(physical_port, key)
 
-    # Then check port-specific media settings
-    if PORT_MEDIA_SETTINGS_KEY in g_dict:
-        result = PortMediaSettingsParser().parse(g_dict[PORT_MEDIA_SETTINGS_KEY], physical_port, key)
-        if result:
-            return result
+        if parse_result.exact_match:
+            return parse_result.exact_match
+        elif parse_result.default_match:
+            default_match = parse_result.default_match
 
-    if CUSTOM_MEDIA_SETTINGS_KEY in g_dict:
-        result = CustomMediaSettingsParser().parse(g_dict[CUSTOM_MEDIA_SETTINGS_KEY], physical_port, key)
-        if result:
-            return result
-
-    return {}
+    return default_match
 
 
 def get_speed_lane_count_and_subport(port, cfg_port_tbl):

@@ -1572,7 +1572,8 @@ class TestXcvrdScript(object):
                 }
             }
         }
-        result = is_si_per_speed_supported(media_dict)
+        parser = media_settings_parser.GlobalMediaSettingsParser({})
+        result = parser.is_si_per_speed_supported(media_dict)
         assert result == True
 
         media_dict = {
@@ -1597,7 +1598,7 @@ class TestXcvrdScript(object):
                 'lane7': '0x00000000'
             }
         }
-        result = is_si_per_speed_supported(media_dict)
+        result = parser.is_si_per_speed_supported(media_dict)
         assert result == False
 
     @pytest.mark.parametrize("media_settings_dict, port, key, expected", [
