@@ -5439,35 +5439,45 @@ class TestXcvrdScript(object):
         # non-breakout case
         lane_count = 4
         subport_num = 0
-        media_str = get_serdes_si_setting_val_str(lane_dict, lane_count, subport_num)
-        assert media_str == '1,2,3,4'
+        media_fvs = MediaSettingsParserBase.to_db_value({'attr': lane_dict}, lane_count, subport_num)
+        assert media_fvs == [('attr', '1,2,3,4')]
         # breakout case
         lane_count = 2
         subport_num = 2
-        media_str = get_serdes_si_setting_val_str(lane_dict, lane_count, subport_num)
-        assert media_str == '3,4'
+        media_fvs = MediaSettingsParserBase.to_db_value({'attr': lane_dict}, lane_count, subport_num)
+        assert media_fvs == [('attr', '3,4')]
         # breakout case without subport number specified in config
         lane_count = 2
         subport_num = 0
-        media_str = get_serdes_si_setting_val_str(lane_dict, lane_count, subport_num)
-        assert media_str == '1,2'
+        media_fvs = MediaSettingsParserBase.to_db_value({'attr': lane_dict}, lane_count, subport_num)
+        assert media_fvs == [('attr', '1,2')]
         # breakout case with out-of-range subport number
         lane_count = 2
         subport_num = 3
-        media_str = get_serdes_si_setting_val_str(lane_dict, lane_count, subport_num)
-        assert media_str == '1,2'
+        media_fvs = MediaSettingsParserBase.to_db_value({'attr': lane_dict}, lane_count, subport_num)
+        assert media_fvs == [('attr', '1,2')]
         # breakout case with smaler lane_dict
         lane_dict = {'lane0': '1', 'lane1': '2'}
         lane_count = 2
         subport_num = 2
-        media_str = get_serdes_si_setting_val_str(lane_dict, lane_count, subport_num)
-        assert media_str == '1,2'
+        media_fvs = MediaSettingsParserBase.to_db_value({'attr': lane_dict}, lane_count, subport_num)
+        assert media_fvs == [('attr', '1,2')]
         # lane key-value pair inserted in non-asceding order
         lane_dict = {'lane0': 'a', 'lane2': 'c', 'lane1': 'b', 'lane3': 'd'}
         lane_count = 2
         subport_num = 2
-        media_str = get_serdes_si_setting_val_str(lane_dict, lane_count, subport_num)
-        assert media_str == 'c,d'
+        media_fvs = MediaSettingsParserBase.to_db_value({'attr': lane_dict}, lane_count, subport_num)
+        assert media_fvs == [('attr', 'c,d')]
+        # non-dict value passes through as-is
+        media_fvs = MediaSettingsParserBase.to_db_value({'ob_m2lp': '0x3'}, 4, 0)
+        assert media_fvs == [('ob_m2lp', '0x3')]
+        # multiple attributes with gearbox
+        media_dict = {
+            'idriver': {'lane0': '0x1', 'lane1': '0x2'},
+            'gb_line_pre1': {'lane0': '0xa', 'lane1': '0xb', 'lane2': '0xc', 'lane3': '0xd'},
+        }
+        media_fvs = MediaSettingsParserBase.to_db_value(media_dict, 2, 0, gearbox_line_lane_count=4)
+        assert media_fvs == [('idriver', '0x1,0x2'), ('gb_line_pre1', '0xa,0xb,0xc,0xd')]
 
     class MockPortMapping:
         logical_port_list = [0, 1, 2]
